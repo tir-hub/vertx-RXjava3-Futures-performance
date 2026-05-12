@@ -1,6 +1,6 @@
 # Vert.x RxJava3 vs Futures — Performance Comparison
 
-https://github.com/tir-hub/vertx-RXjava3-Futures-performance
+https://github.com/tir-hub/vertx-RXjava3-Futures-comparison
 
 Benchmarks four approaches to sequential and parallel HTTP fan-out in Vert.x 4.5,
 comparing plain `Future.compose` / `CompositeFuture.all` against RxJava3
