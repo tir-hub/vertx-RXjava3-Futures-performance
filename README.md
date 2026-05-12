@@ -113,40 +113,33 @@ Full raw data in [results.md](results.md). Summary:
 | Retry/Timeout Futures (20% fail rate) | ~7,280 | 5.1ms | 10.1ms | 2.4% error rate; 500ms timeout, 2 retries |
 | Retry/Timeout RxJava3 (20% fail rate) | ~7,190 | 5.2ms | 9.8ms | 2.4% error rate; 500ms timeout, 2 retries |
 
-## Key findings
+## Summary of findings
 
-**Sequential vs parallel is the only choice that materially matters.**
-With a 250ms backend delay, parallel calls triple throughput (530 → 1,580 rps)
-and cut latency by 3× (754ms → 252ms). This is simply 3×250ms collapsing to 1×250ms.
-Use parallel whenever the three downstream calls are independent.
-
-**RxJava3 overhead is negligible in practice.**
-Throughput is identical to plain Futures in every scenario. RxJava3 shows marginally
-tighter p99 (Rx short-lived subscription objects suit G1GC's young-gen collector).
+**RxJava3 adds no measurable overhead vs plain Vert.x Futures.**
+Throughput and latency are statistically identical across every scenario tested.
 The choice between the two is ergonomics, not performance.
 
-**`Single.zip` is the natural fit for parallel fan-out.**
-```java
-// RxJava3 — intent is explicit
-Single.zip(fetchValue(), fetchValue(), fetchValue(),
-    (v1, v2, v3) -> v1 + v2 + v3)
+| Scenario | Futures rps | RxJava3 rps | Futures p99 | RxJava3 p99 |
+|---|---|---|---|---|
+| Sequential, no delay | ~12,700 | ~13,000 | 4.2ms | 3.9ms |
+| Sequential, 250ms delay | ~530 | ~530 | 771ms | 762ms |
+| Parallel, 250ms delay | ~1,580 | ~1,580 | 309ms | 298ms |
+| Retry/timeout, 20% fail rate | ~7,280 | ~7,190 | 10.1ms | 9.8ms |
 
-// Futures — requires capturing futures before the combinator
-Future<Integer> f1 = fetchValue(), f2 = fetchValue(), f3 = fetchValue();
-CompositeFuture.all(f1, f2, f3)
-    .map(cf -> f1.result() + f2.result() + f3.result())
-```
+**Parallel vs sequential is the only decision that changes performance.**
+With a 250ms backend delay, firing three calls in parallel instead of sequence
+triples throughput (530 → 1,580 rps) and cuts latency by 3×. RxJava3 or Futures
+makes no difference here.
 
-**RxJava3 retry/timeout operators are cleaner and equally fast.**
-`fetchValue().timeout(500, MILLISECONDS, scheduler).retry(2)` is equivalent to
-manually racing a Promise against a vertx timer and recursing with `retriesLeft - 1`.
-Both produce identical throughput and error rates. The RxJava3 version is more concise
-and the Vert.x-aware scheduler keeps timeout callbacks on the event loop without extra threads.
+**RxJava3 wins on conciseness when resilience is involved.**
+Timeout + retry is 3 operator lines in RxJava3 vs a 12-line `withTimeout` helper
+plus recursive retry bookkeeping in plain Futures. For production code that needs
+retries and timeouts, RxJava3's declarative style pays off.
 
-**The 2.4% error rate at 20% fail rate is expected.**
-Each request makes three independent backend calls, any one of which can exhaust its retry
-budget. `P(request fails) = 1 − (1 − 0.2³)³ ≈ 2.4%`. Throughput drops from ~13,000 to
-~7,200 rps because retried calls still consume latency even when they ultimately succeed.
+**RxJava3 shows marginally better tail latency in every run.**
+Short-lived subscription objects are young-gen garbage that G1GC collects cheaply,
+smoothing p99 by a few percent. This is consistent but not large enough to drive
+a technology choice.
 
 **Watch your connection pool size.**
 Sequential variants need at most `in-flight` connections to the backend.
