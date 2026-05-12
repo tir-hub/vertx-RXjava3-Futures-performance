@@ -154,8 +154,9 @@ With no backend delay, virtual threads deliver ~17,000 rps vs ~13,000 for Future
 advantage. The Java `HttpClient` + straight blocking code has less per-call overhead than the
 reactive callback machinery when I/O returns in microseconds. At 250ms backend delay all three
 converge at ~530 rps: the 3×250ms serial latency swamps any framework difference. The crossover
-is somewhere in the low single-digit millisecond range. The advantage carries through to the
-retry scenario: virtual threads hit ~8,500 rps vs ~7,200 for Futures/Rx under a 20% fail rate.
+is somewhere in the low single-digit millisecond range. The advantage carries through to the retry scenario (no backend delay, 20% fail rate):
+virtual threads hit ~8,500 rps vs ~7,200 for Futures/Rx. With a 250ms backend delay
+all three would converge, as the serial I/O latency dominates framework overhead.
 
 **Virtual threads produce the simplest resilience code.**
 Retry in blocking code is a `for` loop. Timeout is a `Duration` on the request.
@@ -177,7 +178,7 @@ See `WebClientOptions.setMaxPoolSize()` in each server-2 variant.
 ## Code comparison: frt vs rxrt vs vtrt
 
 The fan-out and fetch code maps one-for-one between the reactive styles.
-The timeout/retry is where all three diverge most clearly.
+The timeout/retry implementation is where the three coding styles look most different from each other.
 
 ### Fetching a value (with status check)
 
