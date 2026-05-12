@@ -90,6 +90,11 @@
             mvn exec:exec -Ppfutures  (or -Pprx)
             mvn exec:java -Pload -Dload.concurrency=100
 
+          Virtual threads (blocking style, Java 21):
+            mvn exec:exec -Pbackend
+            mvn exec:exec -Pvt
+            mvn exec:java -Pload
+
           Retry/timeout variants (20% backend fail rate):
             mvn exec:exec -Pbackend -Dbackend.failRate=0.2
             mvn exec:exec -Pfrt  (or -Prxrt)
@@ -236,6 +241,35 @@
                                         <argument>-classpath</argument>
                                         <classpath/>
                                         <argument>perf.server2.ParallelRxServer</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>vt</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <id>default-cli</id>
+                                <goals><goal>exec</goal></goals>
+                                <configuration>
+                                    <executable>java</executable>
+                                    <arguments>
+                                        <argument>-Xms128m</argument>
+                                        <argument>-Xmx${server.heap}</argument>
+                                        <argument>-classpath</argument>
+                                        <classpath/>
+                                        <argument>perf.server2.VirtualThreadServer</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
