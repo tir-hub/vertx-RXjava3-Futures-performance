@@ -154,6 +154,89 @@ Parallel variants need `in-flight × 3`. Undersizing the pool causes queuing tha
 can exceed your request timeout and trigger an error cascade.
 See `WebClientOptions.setMaxPoolSize()` in each server-2 variant.
 
+## Code comparison: frt vs rxrt
+
+The fan-out and fetch code maps one-for-one between the two styles.
+The timeout/retry is where they diverge most.
+
+### Fetching a value (with status check)
+
+```java
+// Futures
+private Future<Integer> fetchValue() {
+    return client.get(BACKEND_PORT, "localhost", "/value")
+        .send()
+        .compose(resp -> resp.statusCode() == 200
+            ? Future.succeededFuture(resp.bodyAsJsonObject().getInteger("value"))
+            : Future.failedFuture("HTTP " + resp.statusCode()));
+}
+
+// RxJava3
+private Single<Integer> fetchValue() {
+    return rxClient.get(BACKEND_PORT, "localhost", "/value")
+        .rxSend()
+        .flatMap(resp -> resp.statusCode() == 200
+            ? Single.just(resp.bodyAsJsonObject().getInteger("value"))
+            : Single.error(new RuntimeException("HTTP " + resp.statusCode())));
+}
+```
+
+### Timeout + retry
+
+```java
+// Futures — explicit: Promise races against a vertx timer, recursive retry
+private Future<Integer> fetchValueRT(int retriesLeft) {
+    return withTimeout(fetchValue(), TIMEOUT_MS)
+        .recover(e -> retriesLeft > 0
+            ? fetchValueRT(retriesLeft - 1)
+            : Future.failedFuture(e));
+}
+
+private <T> Future<T> withTimeout(Future<T> future, long ms) {
+    Promise<T> promise = Promise.promise();
+    long timerId = vertx.setTimer(ms, id -> promise.tryFail("timeout after " + ms + "ms"));
+    future.onComplete(ar -> {
+        vertx.cancelTimer(timerId);
+        if (ar.succeeded()) promise.tryComplete(ar.result());
+        else promise.tryFail(ar.cause());
+    });
+    return promise.future();
+}
+
+// RxJava3 — declarative: operators compose directly
+private Single<Integer> fetchValueRT() {
+    return fetchValue()
+        .timeout(TIMEOUT_MS, TimeUnit.MILLISECONDS, scheduler)
+        .retry(MAX_RETRIES);
+}
+```
+
+### Sequential fan-out
+
+```java
+// Futures
+fetchValueRT(MAX_RETRIES)
+    .compose(v1 -> fetchValueRT(MAX_RETRIES).map(v2 -> v1 + v2))
+    .compose(sum12 -> fetchValueRT(MAX_RETRIES).map(v3 -> sum12 + v3))
+    .onSuccess(total -> ctx.response()...end(...))
+    .onFailure(ctx::fail);
+
+// RxJava3
+fetchValueRT()
+    .flatMap(v1 -> fetchValueRT().map(v2 -> v1 + v2))
+    .flatMap(sum12 -> fetchValueRT().map(v3 -> sum12 + v3))
+    .subscribe(
+        total -> ctx.response()...end(...),
+        ctx::fail);
+```
+
+`compose`/`flatMap` and `Future`/`Single` swap one-for-one throughout.
+The only real structural difference is timeout/retry: Futures requires ~12 lines
+of explicit plumbing (`withTimeout` helper + recursive `retriesLeft` parameter),
+while RxJava3 expresses the same thing in 3 lines of operators. That is the
+clearest argument for RxJava3 — not throughput, but conciseness when resilience
+patterns are involved.
+
 ## Stack
 
 - Vert.x 4.5.10
