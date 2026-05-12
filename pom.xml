@@ -16,6 +16,7 @@
         <vertx.version>4.5.10</vertx.version>
         <server.heap>256m</server.heap>
         <backend.delayMs>0</backend.delayMs>
+        <backend.failRate>0</backend.failRate>
     </properties>
 
     <dependencyManagement>
@@ -89,8 +90,14 @@
             mvn exec:exec -Ppfutures  (or -Pprx)
             mvn exec:java -Pload -Dload.concurrency=100
 
+          Retry/timeout variants (20% backend fail rate):
+            mvn exec:exec -Pbackend -Dbackend.failRate=0.2
+            mvn exec:exec -Pfrt  (or -Prxrt)
+            mvn exec:java -Pload
+
           Tune heap:        -Dserver.heap=512m
           Tune instances:   -Dexec.args="8"  (load generator verticle count)
+          Tune fail rate:   -Dbackend.failRate=0.2  (fraction of requests returning HTTP 500)
     -->
     <profiles>
         <profile>
@@ -109,6 +116,7 @@
                                     <executable>java</executable>
                                     <arguments>
                                         <argument>-Dbackend.delayMs=${backend.delayMs}</argument>
+                                        <argument>-Dbackend.failRate=${backend.failRate}</argument>
                                         <argument>-classpath</argument>
                                         <classpath/>
                                         <argument>perf.server3.BackendServer</argument>
@@ -228,6 +236,64 @@
                                         <argument>-classpath</argument>
                                         <classpath/>
                                         <argument>perf.server2.ParallelRxServer</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>frt</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <id>default-cli</id>
+                                <goals><goal>exec</goal></goals>
+                                <configuration>
+                                    <executable>java</executable>
+                                    <arguments>
+                                        <argument>-Xms128m</argument>
+                                        <argument>-Xmx${server.heap}</argument>
+                                        <argument>-classpath</argument>
+                                        <classpath/>
+                                        <argument>perf.server2.RetryTimeoutFuturesServer</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>rxrt</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <id>default-cli</id>
+                                <goals><goal>exec</goal></goals>
+                                <configuration>
+                                    <executable>java</executable>
+                                    <arguments>
+                                        <argument>-Xms128m</argument>
+                                        <argument>-Xmx${server.heap}</argument>
+                                        <argument>-classpath</argument>
+                                        <classpath/>
+                                        <argument>perf.server2.RetryTimeoutRxServer</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
