@@ -84,6 +84,11 @@
             mvn exec:exec -Pfutures  (or -Prx)
             mvn exec:java -Pload -Dload.concurrency=100
 
+          250ms delay + parallel calls:
+            mvn exec:exec -Pbackend -Dbackend.delayMs=250
+            mvn exec:exec -Ppfutures  (or -Pprx)
+            mvn exec:java -Pload -Dload.concurrency=100
+
           Tune heap:        -Dserver.heap=512m
           Tune instances:   -Dexec.args="8"  (load generator verticle count)
     -->
@@ -165,6 +170,64 @@
                                         <argument>-classpath</argument>
                                         <classpath/>
                                         <argument>perf.server2.RxServer</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>pfutures</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <id>default-cli</id>
+                                <goals><goal>exec</goal></goals>
+                                <configuration>
+                                    <executable>java</executable>
+                                    <arguments>
+                                        <argument>-Xms128m</argument>
+                                        <argument>-Xmx${server.heap}</argument>
+                                        <argument>-classpath</argument>
+                                        <classpath/>
+                                        <argument>perf.server2.ParallelFuturesServer</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>prx</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <id>default-cli</id>
+                                <goals><goal>exec</goal></goals>
+                                <configuration>
+                                    <executable>java</executable>
+                                    <arguments>
+                                        <argument>-Xms128m</argument>
+                                        <argument>-Xmx${server.heap}</argument>
+                                        <argument>-classpath</argument>
+                                        <classpath/>
+                                        <argument>perf.server2.ParallelRxServer</argument>
                                     </arguments>
                                 </configuration>
                             </execution>
