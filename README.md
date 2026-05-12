@@ -2,7 +2,7 @@
 
 https://github.com/tir-hub/vertx-RXjava3-Futures-comparison
 
-Benchmarks seven approaches to sequential, parallel, and resilient HTTP fan-out in Vert.x 4.5,
+Benchmarks eight approaches to sequential, parallel, and resilient HTTP fan-out in Vert.x 4.5,
 comparing plain `Future.compose` / `CompositeFuture.all` / manual timeout+retry against RxJava3
 `Single.flatMap` / `Single.zip` / `.timeout().retry()` and Java 21 virtual threads.
 
@@ -25,6 +25,7 @@ comparing plain `Future.compose` / `CompositeFuture.all` / manual timeout+retry 
   - `RetryTimeoutFuturesServer` — sequential with per-call timeout and retry via `withTimeout()` + `.recover()`
   - `RetryTimeoutRxServer` — sequential with per-call timeout and retry via `.timeout(scheduler).retry(n)`
   - `VirtualThreadServer` — sequential blocking calls on Java 21 virtual threads; no reactive API
+  - `VirtualThreadRetryServer` — same as above with per-call timeout and retry via a plain `for` loop
 - **Server-1** — closed-loop load generator; keeps a fixed number of requests in flight
   and reports throughput + latency percentiles every 5 seconds
 
@@ -74,7 +75,7 @@ limits under high concurrency.
 
 ```bash
 mvn exec:exec -Pbackend -Dbackend.failRate=0.2
-mvn exec:exec -Pfrt            # or -Prxrt
+mvn exec:exec -Pfrt            # or -Prxrt  or  -Pvtrt
 mvn exec:java -Pload           # 40 in-flight; expect ~2.4% errors
 ```
 
@@ -93,6 +94,7 @@ Each backend call gets a 500ms timeout and up to 2 retries. With a 20% fail rate
 | `-Pfrt` | RetryTimeoutFuturesServer — retry/timeout Futures | 8082 |
 | `-Prxrt` | RetryTimeoutRxServer — retry/timeout RxJava3 | 8082 |
 | `-Pvt` | VirtualThreadServer — Java 21 virtual threads | 8082 |
+| `-Pvtrt` | VirtualThreadRetryServer — Java 21 virtual threads + retry | 8082 |
 | `-Pload` | LoadGenerator (server-1) | — |
 
 ### Tuning
@@ -127,6 +129,7 @@ Full raw data in [results.md](results.md). Summary:
 | Sequential RxJava3 (no delay) | ~13,000 peak | 3.0ms | 3.9ms | GC floor at ~10,700 rps |
 | Retry/Timeout Futures (20% fail rate) | ~7,280 | 5.1ms | 10.1ms | 2.4% error rate; 500ms timeout, 2 retries |
 | Retry/Timeout RxJava3 (20% fail rate) | ~7,190 | 5.2ms | 9.8ms | 2.4% error rate; 500ms timeout, 2 retries |
+| Retry/Timeout Virtual Threads (20% fail rate) | ~8,500 | 4.3ms | 8.9ms | 2.4% error rate; 500ms timeout, 2 retries |
 
 ## Summary of findings
 
@@ -139,7 +142,7 @@ The choice between the two is ergonomics, not performance.
 | Sequential, no delay | ~12,700 | ~13,000 | **~17,000** | 4.2ms | 3.9ms | **3.6ms** |
 | Sequential, 250ms delay | ~530 | ~530 | ~530 | 771ms | 762ms | ~780ms |
 | Parallel, 250ms delay | ~1,580 | ~1,580 | — | 309ms | 298ms | — |
-| Retry/timeout, 20% fail rate | ~7,280 | ~7,190 | — | 10.1ms | 9.8ms | — |
+| Retry/timeout, 20% fail rate | ~7,280 | ~7,190 | **~8,500** | 10.1ms | 9.8ms | **8.9ms** |
 
 **Parallel vs sequential is the only decision that changes performance.**
 With a 250ms backend delay, firing three calls in parallel instead of sequence
@@ -151,12 +154,15 @@ With no backend delay, virtual threads deliver ~17,000 rps vs ~13,000 for Future
 advantage. The Java `HttpClient` + straight blocking code has less per-call overhead than the
 reactive callback machinery when I/O returns in microseconds. At 250ms backend delay all three
 converge at ~530 rps: the 3×250ms serial latency swamps any framework difference. The crossover
-is somewhere in the low single-digit millisecond range.
+is somewhere in the low single-digit millisecond range. The advantage carries through to the retry scenario (no backend delay, 20% fail rate):
+virtual threads hit ~8,500 rps vs ~7,200 for Futures/Rx. With a 250ms backend delay
+all three would converge, as the serial I/O latency dominates framework overhead.
 
-**RxJava3 wins on conciseness when resilience is involved.**
-Timeout + retry is 3 operator lines in RxJava3 vs a 12-line `withTimeout` helper
-plus recursive retry bookkeeping in plain Futures. For production code that needs
-retries and timeouts, RxJava3's declarative style pays off.
+**Virtual threads produce the simplest resilience code.**
+Retry in blocking code is a `for` loop. Timeout is a `Duration` on the request.
+No helper methods, no recursive parameters, no operators needed. RxJava3's
+`.timeout().retry()` is the next cleanest. Plain Futures requires the most
+boilerplate: a 12-line `withTimeout` helper plus a recursive `retriesLeft` parameter.
 
 **RxJava3 shows marginally better tail latency in every run.**
 Short-lived subscription objects are young-gen garbage that G1GC collects cheaply,
@@ -169,10 +175,10 @@ Parallel variants need `in-flight × 3`. Undersizing the pool causes queuing tha
 can exceed your request timeout and trigger an error cascade.
 See `WebClientOptions.setMaxPoolSize()` in each server-2 variant.
 
-## Code comparison: frt vs rxrt
+## Code comparison: frt vs rxrt vs vtrt
 
-The fan-out and fetch code maps one-for-one between the two styles.
-The timeout/retry is where they diverge most.
+The fan-out and fetch code maps one-for-one between the reactive styles.
+The timeout/retry implementation is where the three coding styles look most different from each other.
 
 ### Fetching a value (with status check)
 
@@ -199,6 +205,25 @@ private Single<Integer> fetchValue() {
 ### Timeout + retry
 
 ```java
+// Virtual threads — a for loop and a Duration; no helpers needed
+private int fetchValueRT() throws Exception {
+    Exception last = null;
+    for (int attempts = MAX_RETRIES + 1; attempts > 0; attempts--) {
+        try { return fetchValue(); }
+        catch (Exception e) { last = e; }
+    }
+    throw last;
+}
+// timeout lives on the request:
+//   HttpRequest.newBuilder().timeout(Duration.ofMillis(TIMEOUT_MS))...
+
+// RxJava3 — declarative: operators compose directly
+private Single<Integer> fetchValueRT() {
+    return fetchValue()
+        .timeout(TIMEOUT_MS, TimeUnit.MILLISECONDS, scheduler)
+        .retry(MAX_RETRIES);
+}
+
 // Futures — explicit: Promise races against a vertx timer, recursive retry
 private Future<Integer> fetchValueRT(int retriesLeft) {
     return withTimeout(fetchValue(), TIMEOUT_MS)
@@ -216,13 +241,6 @@ private <T> Future<T> withTimeout(Future<T> future, long ms) {
         else promise.tryFail(ar.cause());
     });
     return promise.future();
-}
-
-// RxJava3 — declarative: operators compose directly
-private Single<Integer> fetchValueRT() {
-    return fetchValue()
-        .timeout(TIMEOUT_MS, TimeUnit.MILLISECONDS, scheduler)
-        .retry(MAX_RETRIES);
 }
 ```
 
@@ -245,12 +263,13 @@ fetchValueRT()
         ctx::fail);
 ```
 
-`compose`/`flatMap` and `Future`/`Single` swap one-for-one throughout.
-The only real structural difference is timeout/retry: Futures requires ~12 lines
-of explicit plumbing (`withTimeout` helper + recursive `retriesLeft` parameter),
-while RxJava3 expresses the same thing in 3 lines of operators. That is the
-clearest argument for RxJava3 — not throughput, but conciseness when resilience
-patterns are involved.
+Virtual threads win on simplicity: retry is a `for` loop, timeout is a `Duration`
+on the request — no helpers, no operators, no extra parameters. RxJava3 is next
+with 3 declarative operator lines. Plain Futures requires the most code: a 12-line
+`withTimeout` helper plus a recursive `retriesLeft` parameter.
+
+For the reactive styles, `compose`/`flatMap` and `Future`/`Single` swap
+one-for-one in the fan-out chain — those parts are structurally identical.
 
 ## Stack
 
