@@ -2,9 +2,9 @@
 
 https://github.com/tir-hub/vertx-RXjava3-Futures-comparison
 
-Benchmarks six approaches to sequential, parallel, and resilient HTTP fan-out in Vert.x 4.5,
+Benchmarks seven approaches to sequential, parallel, and resilient HTTP fan-out in Vert.x 4.5,
 comparing plain `Future.compose` / `CompositeFuture.all` / manual timeout+retry against RxJava3
-`Single.flatMap` / `Single.zip` / `.timeout().retry()`.
+`Single.flatMap` / `Single.zip` / `.timeout().retry()` and Java 21 virtual threads.
 
 ## Architecture
 
@@ -24,6 +24,7 @@ comparing plain `Future.compose` / `CompositeFuture.all` / manual timeout+retry 
   - `ParallelRxServer` — parallel via `Single.zip`
   - `RetryTimeoutFuturesServer` — sequential with per-call timeout and retry via `withTimeout()` + `.recover()`
   - `RetryTimeoutRxServer` — sequential with per-call timeout and retry via `.timeout(scheduler).retry(n)`
+  - `VirtualThreadServer` — sequential blocking calls on Java 21 virtual threads; no reactive API
 - **Server-1** — closed-loop load generator; keeps a fixed number of requests in flight
   and reports throughput + latency percentiles every 5 seconds
 
@@ -56,6 +57,19 @@ mvn exec:exec -Pfutures        # or -Prx  or  -Ppfutures  or  -Pprx
 mvn exec:java -Pload -Dload.concurrency=100   # 400 in-flight
 ```
 
+### Virtual threads (Java 21 blocking style)
+
+```bash
+mvn exec:exec -Pbackend
+mvn exec:exec -Pvt
+mvn exec:java -Pload           # no delay: 40 in-flight
+mvn exec:java -Pload -Dload.concurrency=100   # 250ms delay: 400 in-flight
+```
+
+Note: the `vt` server uses `java.net.http.HttpClient` forced to HTTP/1.1.
+The default client negotiates HTTP/2 with Vert.x and hits `MAX_CONCURRENT_STREAMS`
+limits under high concurrency.
+
 ### Retry/timeout variants (20% backend fail rate)
 
 ```bash
@@ -78,6 +92,7 @@ Each backend call gets a 500ms timeout and up to 2 retries. With a 20% fail rate
 | `-Pprx` | ParallelRxServer — parallel RxJava3 | 8082 |
 | `-Pfrt` | RetryTimeoutFuturesServer — retry/timeout Futures | 8082 |
 | `-Prxrt` | RetryTimeoutRxServer — retry/timeout RxJava3 | 8082 |
+| `-Pvt` | VirtualThreadServer — Java 21 virtual threads | 8082 |
 | `-Pload` | LoadGenerator (server-1) | — |
 
 ### Tuning
@@ -119,17 +134,24 @@ Full raw data in [results.md](results.md). Summary:
 Throughput and latency are statistically identical across every scenario tested.
 The choice between the two is ergonomics, not performance.
 
-| Scenario | Futures rps | RxJava3 rps | Futures p99 | RxJava3 p99 |
-|---|---|---|---|---|
-| Sequential, no delay | ~12,700 | ~13,000 | 4.2ms | 3.9ms |
-| Sequential, 250ms delay | ~530 | ~530 | 771ms | 762ms |
-| Parallel, 250ms delay | ~1,580 | ~1,580 | 309ms | 298ms |
-| Retry/timeout, 20% fail rate | ~7,280 | ~7,190 | 10.1ms | 9.8ms |
+| Scenario | Futures rps | RxJava3 rps | Virtual Threads rps | Futures p99 | RxJava3 p99 | VT p99 |
+|---|---|---|---|---|---|---|
+| Sequential, no delay | ~12,700 | ~13,000 | **~17,000** | 4.2ms | 3.9ms | **3.6ms** |
+| Sequential, 250ms delay | ~530 | ~530 | ~530 | 771ms | 762ms | ~780ms |
+| Parallel, 250ms delay | ~1,580 | ~1,580 | — | 309ms | 298ms | — |
+| Retry/timeout, 20% fail rate | ~7,280 | ~7,190 | — | 10.1ms | 9.8ms | — |
 
 **Parallel vs sequential is the only decision that changes performance.**
 With a 250ms backend delay, firing three calls in parallel instead of sequence
 triples throughput (530 → 1,580 rps) and cuts latency by 3×. RxJava3 or Futures
 makes no difference here.
+
+**Java 21 virtual threads outperform reactive when I/O is fast, converge when it is slow.**
+With no backend delay, virtual threads deliver ~17,000 rps vs ~13,000 for Futures/Rx — a 30%
+advantage. The Java `HttpClient` + straight blocking code has less per-call overhead than the
+reactive callback machinery when I/O returns in microseconds. At 250ms backend delay all three
+converge at ~530 rps: the 3×250ms serial latency swamps any framework difference. The crossover
+is somewhere in the low single-digit millisecond range.
 
 **RxJava3 wins on conciseness when resilience is involved.**
 Timeout + retry is 3 operator lines in RxJava3 vs a 12-line `withTimeout` helper
