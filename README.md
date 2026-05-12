@@ -312,6 +312,25 @@ with 3 declarative operator lines. Plain Futures requires the most code: a 12-li
 For the reactive styles, `compose`/`flatMap` and `Future`/`Single` swap
 one-for-one in the fan-out chain — those parts are structurally identical.
 
+## Why Vert.x + virtual threads?
+
+Vert.x is still a reasonable — and arguably good — host for the virtual thread
+implementations. It handles what it does best: the HTTP server, connection
+management, routing, and the event loop that accepts and dispatches requests.
+Virtual threads only take over for the blocking I/O inside the handler. The two
+layers don't conflict; they each handle what they are best at.
+
+The alternative would be an embedded Jetty or Spring Boot app with virtual threads.
+Those work, but you trade Vert.x's lean HTTP layer for a heavier container without
+gaining anything for the network side. Vert.x's HTTP server is one of the fastest
+on the JVM — there is no reason to replace it just because the handler code is now
+blocking.
+
+The practical advantages Vert.x is known for — small fat-jar, low memory footprint,
+fast startup, quick build iterations — are unaffected by virtual threads. The VT
+servers here add zero new dependencies (`java.net.http` and `java.util.concurrent`
+are part of the JDK), the jar stays the same size, and startup time is unchanged.
+
 ## Stack
 
 - Vert.x 4.5.10
