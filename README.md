@@ -82,6 +82,27 @@ mvn exec:java -Pload           # 40 in-flight; expect ~2.4% errors
 Each backend call gets a 500ms timeout and up to 2 retries. With a 20% fail rate,
 ~2.4% of requests exhaust all three attempts and return an error to the client.
 
+**Why 2.4% and not 20%?** The math has two steps.
+
+*Step 1 — one `fetchValueRT` call exhausting all 3 attempts:*
+Each attempt is independent, so multiply the per-attempt fail probability:
+```
+P(all 3 attempts fail) = 0.2 × 0.2 × 0.2 = 0.2³ = 0.008  (0.8%)
+```
+
+*Step 2 — a whole request failing:*
+Each request makes 3 sequential `fetchValueRT` calls. It succeeds only if all 3
+succeed. Rather than adding up all the ways one, two, or three calls could fail,
+use the complement: compute the probability of success and subtract from 1.
+```
+P(one fetchValueRT succeeds) = 1 − 0.008 = 0.992
+P(all 3 succeed)             = 0.992³    ≈ 0.976
+P(at least one fails)        = 1 − 0.992³ ≈ 0.024  (2.4%)
+```
+
+The general formula: `P(request fails) = 1 − (1 − p^(retries+1))^calls`
+where `p` is the per-attempt fail rate. With `p=0.2`, `retries=2`, `calls=3` → 2.4%.
+
 ### All profiles
 
 | Profile | Server | Port |
