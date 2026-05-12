@@ -196,10 +196,30 @@ Parallel variants need `in-flight × 3`. Undersizing the pool causes queuing tha
 can exceed your request timeout and trigger an error cascade.
 See `WebClientOptions.setMaxPoolSize()` in each server-2 variant.
 
-## Code comparison: frt vs rxrt vs vtrt
+## Code comparison
 
 The fan-out and fetch code maps one-for-one between the reactive styles.
 The timeout/retry implementation is where the three coding styles look most different from each other.
+
+### Parallel fan-out
+
+```java
+// RxJava3 — intent is explicit, combinator function states the result directly
+Single.zip(fetchValue(), fetchValue(), fetchValue(),
+    (v1, v2, v3) -> v1 + v2 + v3)
+
+// Futures — must capture futures first, then extract results after the combinator
+Future<Integer> f1 = fetchValue(), f2 = fetchValue(), f3 = fetchValue();
+CompositeFuture.all(f1, f2, f3)
+    .map(cf -> f1.result() + f2.result() + f3.result())
+
+// Virtual threads — submit three tasks, then block (parks the virtual thread,
+// not a platform thread) until all complete
+var f1 = CompletableFuture.supplyAsync(this::fetchValue, vtExecutor);
+var f2 = CompletableFuture.supplyAsync(this::fetchValue, vtExecutor);
+var f3 = CompletableFuture.supplyAsync(this::fetchValue, vtExecutor);
+int sum = f1.get() + f2.get() + f3.get();
+```
 
 ### Fetching a value (with status check)
 
