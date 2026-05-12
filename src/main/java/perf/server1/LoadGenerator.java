@@ -61,7 +61,7 @@ public class LoadGenerator extends AbstractVerticle {
             .timeout(10_000)
             .send()
             .onComplete(ar -> {
-                if (ar.succeeded()) {
+                if (ar.succeeded() && ar.result().statusCode() == 200) {
                     latenciesUs.add((System.nanoTime() - startNs) / 1_000);
                     successCount.increment();
                 } else {
