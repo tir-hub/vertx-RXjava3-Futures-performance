@@ -2,9 +2,9 @@
 
 https://github.com/tir-hub/vertx-RXjava3-Futures-comparison
 
-Benchmarks four approaches to sequential and parallel HTTP fan-out in Vert.x 4.5,
-comparing plain `Future.compose` / `CompositeFuture.all` against RxJava3
-`Single.flatMap` / `Single.zip`.
+Benchmarks six approaches to sequential, parallel, and resilient HTTP fan-out in Vert.x 4.5,
+comparing plain `Future.compose` / `CompositeFuture.all` / manual timeout+retry against RxJava3
+`Single.flatMap` / `Single.zip` / `.timeout().retry()`.
 
 ## Architecture
 
@@ -22,6 +22,8 @@ comparing plain `Future.compose` / `CompositeFuture.all` against RxJava3
   - `RxServer` — sequential via `Single.flatMap`
   - `ParallelFuturesServer` — parallel via `CompositeFuture.all`
   - `ParallelRxServer` — parallel via `Single.zip`
+  - `RetryTimeoutFuturesServer` — sequential with per-call timeout and retry via `withTimeout()` + `.recover()`
+  - `RetryTimeoutRxServer` — sequential with per-call timeout and retry via `.timeout(scheduler).retry(n)`
 - **Server-1** — closed-loop load generator; keeps a fixed number of requests in flight
   and reports throughput + latency percentiles every 5 seconds
 
@@ -54,6 +56,17 @@ mvn exec:exec -Pfutures        # or -Prx  or  -Ppfutures  or  -Pprx
 mvn exec:java -Pload -Dload.concurrency=100   # 400 in-flight
 ```
 
+### Retry/timeout variants (20% backend fail rate)
+
+```bash
+mvn exec:exec -Pbackend -Dbackend.failRate=0.2
+mvn exec:exec -Pfrt            # or -Prxrt
+mvn exec:java -Pload           # 40 in-flight; expect ~2.4% errors
+```
+
+Each backend call gets a 500ms timeout and up to 2 retries. With a 20% fail rate,
+~2.4% of requests exhaust all three attempts and return an error to the client.
+
 ### All profiles
 
 | Profile | Server | Port |
@@ -63,6 +76,8 @@ mvn exec:java -Pload -Dload.concurrency=100   # 400 in-flight
 | `-Prx` | RxServer — sequential RxJava3 | 8082 |
 | `-Ppfutures` | ParallelFuturesServer — parallel Futures | 8082 |
 | `-Pprx` | ParallelRxServer — parallel RxJava3 | 8082 |
+| `-Pfrt` | RetryTimeoutFuturesServer — retry/timeout Futures | 8082 |
+| `-Prxrt` | RetryTimeoutRxServer — retry/timeout RxJava3 | 8082 |
 | `-Pload` | LoadGenerator (server-1) | — |
 
 ### Tuning
@@ -70,6 +85,7 @@ mvn exec:java -Pload -Dload.concurrency=100   # 400 in-flight
 ```bash
 -Dserver.heap=512m          # max heap for server-2 (default 256m)
 -Dbackend.delayMs=250       # backend response delay in ms (default 0)
+-Dbackend.failRate=0.2      # fraction of backend responses that return HTTP 500 (default 0)
 -Dload.concurrency=100      # in-flight requests per load verticle (default 10)
 -Dexec.args="4"             # load generator verticle count (default 4)
 ```
@@ -94,6 +110,8 @@ Full raw data in [results.md](results.md). Summary:
 | Parallel RxJava3 (250ms delay) | ~1,580 | 252ms | 298ms | flat, no degradation |
 | Sequential Futures (no delay) | ~12,700 peak | 3.1ms | 4.2ms | GC floor at ~10,700 rps |
 | Sequential RxJava3 (no delay) | ~13,000 peak | 3.0ms | 3.9ms | GC floor at ~10,700 rps |
+| Retry/Timeout Futures (20% fail rate) | ~7,280 | 5.1ms | 10.1ms | 2.4% error rate; 500ms timeout, 2 retries |
+| Retry/Timeout RxJava3 (20% fail rate) | ~7,190 | 5.2ms | 9.8ms | 2.4% error rate; 500ms timeout, 2 retries |
 
 ## Key findings
 
@@ -118,6 +136,17 @@ Future<Integer> f1 = fetchValue(), f2 = fetchValue(), f3 = fetchValue();
 CompositeFuture.all(f1, f2, f3)
     .map(cf -> f1.result() + f2.result() + f3.result())
 ```
+
+**RxJava3 retry/timeout operators are cleaner and equally fast.**
+`fetchValue().timeout(500, MILLISECONDS, scheduler).retry(2)` is equivalent to
+manually racing a Promise against a vertx timer and recursing with `retriesLeft - 1`.
+Both produce identical throughput and error rates. The RxJava3 version is more concise
+and the Vert.x-aware scheduler keeps timeout callbacks on the event loop without extra threads.
+
+**The 2.4% error rate at 20% fail rate is expected.**
+Each request makes three independent backend calls, any one of which can exhaust its retry
+budget. `P(request fails) = 1 − (1 − 0.2³)³ ≈ 2.4%`. Throughput drops from ~13,000 to
+~7,200 rps because retried calls still consume latency even when they ultimately succeed.
 
 **Watch your connection pool size.**
 Sequential variants need at most `in-flight` connections to the backend.
